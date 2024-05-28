@@ -61,7 +61,7 @@ wandb:
   job_type: training
   mode: online # choices=['online', 'offline', 'disabled']
   name: null
-  save_dir: "."
+  save_dir: "/mnt/data2/zhenqiaosong/HyenaDNA/models"
   id: ${.name} # pass correct id to resume experiment!
   # Below options should not need to be specified
   # entity: ""  # set to name of your wandb team or just remove it
@@ -72,4 +72,4 @@ wandb:
 
 hydra:
   run:
-    dir: ./outputs/${now:%Y-%m-%d}/${now:%H-%M-%S-%f}
+    dir: /mnt/taurus/data2/zhenqiaosong/HyenaDNA/eqtl/Adipose_Subcutaneous

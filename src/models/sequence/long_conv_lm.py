@@ -2,6 +2,7 @@ import copy
 import math
 import re
 from functools import partial
+import numpy as np
 
 from collections import namedtuple, OrderedDict
 from collections.abc import Sequence
@@ -300,7 +301,8 @@ class LMBackbone(nn.Module):
         # the main branch (output of MLP). The model definition is unchanged, but the mapping of the
         # nn.Dropout probabilities are changed.
         # This is for performance reason: we can fuse dropout + add + layer_norm.
-        self.fused_dropout_add_ln = fused_dropout_add_ln
+        # self.fused_dropout_add_ln = fused_dropout_add_ln
+        self.fused_dropout_add_ln = False
         if self.fused_dropout_add_ln and dropout_add_layer_norm is None:
             raise ImportError("dropout_add_layer_norm is not installed")
 
@@ -319,7 +321,7 @@ class LMBackbone(nn.Module):
                     residual_in_fp32=residual_in_fp32,
                     fused_mlp=fused_mlp,
                     identity_mlp=identity_mlp,
-                    fused_dropout_add_ln=fused_dropout_add_ln,
+                    fused_dropout_add_ln=self.fused_dropout_add_ln,
                     layer_idx=i,
                     sequence_parallel=self.sequence_parallel,
                     checkpoint_mlp=checkpoint_mlp,
@@ -332,6 +334,7 @@ class LMBackbone(nn.Module):
 
         self.drop_f = nn.Dropout(resid_dropout)
         self.ln_f = nn.LayerNorm(d_model, eps=layer_norm_epsilon, **factory_kwargs)
+        self.out_layer = nn.Linear(d_model, 2)
 
         if process_group is not None:
             for p in self.ln_f.parameters():
@@ -366,6 +369,7 @@ class LMBackbone(nn.Module):
         hidden_states = self.embeddings(
             input_ids, position_ids=position_ids, **embedding_kwargs
         )
+
         residual = None
         mixer_kwargs = (
             {"seqlen": input_ids.shape[1]}
@@ -374,6 +378,8 @@ class LMBackbone(nn.Module):
         )
         if inference_params is not None:
             mixer_kwargs["inference_params"] = inference_params
+
+
         for layer in self.layers:
             hidden_states, residual = layer(
                 hidden_states, residual, mixer_kwargs=mixer_kwargs
@@ -394,7 +400,11 @@ class LMBackbone(nn.Module):
                 prenorm=False,
                 residual_in_fp32=self.residual_in_fp32,
             )
-        return hidden_states
+
+        hidden_states = torch.mean(hidden_states.reshape(hidden_states.size(0), -1, hidden_states.size(-1)), dim=1)
+        outs = F.softmax(self.out_layer(hidden_states), dim=-1) #+ 1e-5
+        return outs
+        # return hidden_states
 
 
 class ConvLMHeadModel(nn.Module, GenerationMixin):
@@ -500,6 +510,115 @@ class ConvLMHeadModel(nn.Module, GenerationMixin):
                 )
         CausalLMOutput = namedtuple("CausalLMOutput", ["logits"])
         return CausalLMOutput(logits=lm_logits), None
+
+
+class EQTLModel(nn.Module, GenerationMixin):
+    def __init__(
+        self,
+        d_model: int,
+        n_layer: int,
+        d_inner: int,
+        vocab_size: int,
+        process_group=None,
+        layer=None,
+        attn_layer_idx=None,
+        attn_cfg=None,
+        max_position_embeddings=0,
+        resid_dropout: float = 0.0,
+        embed_dropout: float = 0.1,
+        dropout_cls=nn.Dropout,
+        layer_norm_epsilon: float = 1e-5,
+        initializer_cfg=None,
+        fused_mlp=False,
+        fused_dropout_add_ln=False,
+        residual_in_fp32=False,
+        pad_vocab_size_multiple: int = 1,
+        sequence_parallel=True,
+        checkpoint_mlp=False,
+        checkpoint_mixer=False,
+        device=None,
+        dtype=None,
+        **kwargs,
+    ) -> None:
+        factory_kwargs = {"device": device, "dtype": dtype}
+        super().__init__()
+        self.process_group = process_group
+        if vocab_size % pad_vocab_size_multiple != 0:
+            vocab_size += pad_vocab_size_multiple - (
+                vocab_size % pad_vocab_size_multiple
+            )
+        self.backbone = LMBackbone(
+            d_model=d_model,
+            n_layer=n_layer,
+            d_inner=d_inner,
+            vocab_size=vocab_size,
+            process_group=process_group,
+            layer=layer,
+            attn_layer_idx=attn_layer_idx,
+            attn_cfg=attn_cfg,
+            max_position_embeddings=max_position_embeddings,
+            resid_dropout=resid_dropout,
+            embed_dropout=embed_dropout,
+            dropout_cls=dropout_cls,
+            layer_norm_epsilon=layer_norm_epsilon,
+            initializer_cfg=initializer_cfg,
+            fused_mlp=fused_mlp,
+            fused_dropout_add_ln=fused_dropout_add_ln,
+            residual_in_fp32=residual_in_fp32,
+            sequence_parallel=sequence_parallel,
+            checkpoint_mlp=checkpoint_mlp,
+            checkpoint_mixer=checkpoint_mixer,
+            **factory_kwargs,
+            **kwargs,
+        )
+        self.out_projection = nn.Linear(d_model, 2, bias=False)
+        if process_group is None:
+            self.lm_head = nn.Linear(d_model, vocab_size, bias=False, **factory_kwargs)
+        else:
+            if ColumnParallelLinear is None:
+                raise ImportError("fused_dense_lib is not installed")
+            self.lm_head = ColumnParallelLinear(
+                d_model,
+                vocab_size,
+                process_group,
+                bias=False,
+                sequence_parallel=sequence_parallel,
+                **factory_kwargs,
+            )
+        # Initialize weights and apply final processing
+        self.apply(
+            partial(
+                _init_weights,
+                n_layer=n_layer,
+                **(initializer_cfg if initializer_cfg is not None else {}),
+            )
+        )
+        self.tie_weights()
+
+    def tie_weights(self):
+        self.lm_head.weight = self.backbone.embeddings.word_embeddings.weight
+        if self.process_group is not None:
+            sync_shared_params(self, self.process_group)
+
+    def forward(
+        self, input_ids, position_ids=None, inference_params=None, state=None
+    ):  # state for the repo interface
+        hidden_states = self.backbone(
+            input_ids, position_ids=position_ids, inference_params=inference_params
+        )
+        lm_logits = self.lm_head(hidden_states)
+        # During inference, we want the full logit for sampling
+        if ColumnParallelLinear is not None and inference_params is not None:
+            if isinstance(self.lm_head, ColumnParallelLinear):
+                lm_logits, _ = all_gather_raw(lm_logits, self.lm_head.process_group)
+                lm_logits = rearrange(
+                    lm_logits, "(n b) s d -> b s (n d)", b=hidden_states.shape[0]
+                )
+        # CausalLMOutput = namedtuple("CausalLMOutput", ["logits"])
+        # return CausalLMOutput(logits=lm_logits), None
+        seq_prob = torch.softmax(lm_logits, dim=-1)
+        preds = torch.softmax(self.out_projection(hidden_states), dim=-1)
+        return seq_prob, preds
 
 
 class DNAEmbeddingModel(nn.Module, GenerationMixin):

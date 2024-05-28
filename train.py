@@ -26,6 +26,10 @@ from src.dataloaders import SequenceDataset  # TODO make registry
 from src.tasks import decoders, encoders, tasks
 from src.utils import registry
 from src.utils.optim_groups import add_optimizer_hooks
+# from src.dataloaders.datasets.akita_dataset import get_dataloader
+# from src.dataloaders.datasets.enformer_dataset import get_dataloader
+from src.dataloaders.datasets.eqtl_dataset import get_dataloader
+
 
 log = src.utils.train.get_logger(__name__)
 
@@ -36,6 +40,9 @@ torch.backends.cudnn.allow_tf32 = True
 
 OmegaConf.register_new_resolver('eval', eval)
 OmegaConf.register_new_resolver('div_up', lambda x, y: (x + y - 1) // y)
+
+# fw = open("/mnt/gemini/data2/zhenqiaosong/HyenaDNA/models/output/result_qtl_mouse.txt", "w", encoding="utf-8")
+
 
 # Lots of annoying hacks to get WandbLogger to continuously retry on failure
 class DummyExperiment:
@@ -186,13 +193,13 @@ class SequenceLightningModule(pl.LightningModule):
         encoder = encoders.instantiate(
             encoder_cfg, dataset=self.dataset, model=self.model
         )
-        decoder = decoders.instantiate(
-            decoder_cfg, model=self.model, dataset=self.dataset
-        )
+        # decoder = decoders.instantiate(
+        #     decoder_cfg, model=self.model, dataset=self.dataset
+        # )
 
         # Extract the modules so they show up in the top level parameter count
         self.encoder = U.PassthroughSequential(self.task.encoder, encoder)
-        self.decoder = U.PassthroughSequential(decoder, self.task.decoder)
+        # self.decoder = U.PassthroughSequential(decoder, self.task.decoder)
         self.loss = self.task.loss
         self.loss_val = self.task.loss
         if hasattr(self.task, 'loss_val'):
@@ -305,7 +312,7 @@ class SequenceLightningModule(pl.LightningModule):
     #     return x, y, w
 
     def forward(self, batch):
-        return self.task.forward(batch, self.encoder, self.model, self.decoder, self._state)
+        return self.task.forward(batch, self.encoder, self.model, self._state)
 
     def step(self, x_t):
         x_t, *_ = self.encoder(x_t) # Potential edge case for encoders that expect (B, L, H)?
@@ -320,16 +327,20 @@ class SequenceLightningModule(pl.LightningModule):
     def _shared_step(self, batch, batch_idx, prefix="train"):
 
         self._process_state(batch, batch_idx, train=(prefix == "train"))
-        x, y, w = self.forward(batch)
+        x, y = self.forward(batch)
 
         # Loss
         if prefix == 'train':
-            loss = self.loss(x, y, **w)
+            loss = self.loss(x, y)
         else:
-            loss = self.loss_val(x, y, **w)
+            loss = self.loss_val(x, y)
+
+        # for i in range(x.size(0)):
+        #     for j in range(x.size(1)):
+        #         fw.write(str(x[i][j][1].item()) + " " + str(y[i][j].item()) + "\n")
 
         # Metrics
-        metrics = self.metrics(x, y, **w)
+        metrics = self.metrics(x, y)
         metrics["loss"] = loss
         metrics = {f"{prefix}/{k}": v for k, v in metrics.items()}
 
@@ -391,9 +402,10 @@ class SequenceLightningModule(pl.LightningModule):
 
         # Log the loss explicitly so it shows up in WandB
         # Note that this currently runs into a bug in the progress bar with ddp (as of 1.4.6)
-        # https://github.com/PyTorchLightning/pytorch-lightning/pull/9142
+        # https://github.com/PyTorchLightning/pytorch-lightning/pull/9142ƒ
         # We additionally log the epochs under 'trainer' to get a consistent prefix with 'global_step'
         loss_epoch = {"trainer/loss": loss, "trainer/epoch": self.current_epoch}
+        print(loss)
         self.log_dict(
             loss_epoch,
             on_step=True,
@@ -523,7 +535,11 @@ class SequenceLightningModule(pl.LightningModule):
         return [optimizer], [scheduler]
 
     def train_dataloader(self):
-        return self.dataset.train_dataloader(**self.hparams.loader)
+        return get_dataloader("Adipose_Subcutaneous", "train")
+        # return get_dataloader("/mnt/aries/data4/danqingwang/workspace/clone/hyena-dna/data/Enformer/mm10.ml.fa",
+        #                       "mouse", "train")
+        # return get_dataloader("/mnt/taurus/data2/zhenqiaosong/HyenaDNA/data_long_range_dna/Akita/tfrecords/train-*.tfr")
+        # return self.dataset.train_dataloader(**self.hparams.loader)
 
     def _eval_dataloaders_names(self, loaders, prefix):
         """Process loaders into a list of names and loaders"""
@@ -538,8 +554,14 @@ class SequenceLightningModule(pl.LightningModule):
 
     def _eval_dataloaders(self):
         # Return all val + test loaders
-        val_loaders = self.dataset.val_dataloader(**self.hparams.loader)
-        test_loaders = self.dataset.test_dataloader(**self.hparams.loader)
+        # val_loaders =  get_dataloader("/mnt/aries/data4/danqingwang/workspace/clone/hyena-dna/data/Enformer/mm10.ml.fa",
+        #                       "mouse", "valid")
+        val_loaders = get_dataloader("Adipose_Subcutaneous", "valid")
+        test_loaders = get_dataloader("Adipose_Subcutaneous", "test")
+        # val_loaders = get_dataloader("/mnt/taurus/data2/zhenqiaosong/HyenaDNA/data_long_range_dna/Akita/tfrecords/valid-*.tfr")
+        # test_loaders = get_dataloader("/mnt/aries/data4/danqingwang/workspace/clone/hyena-dna/data/Enformer/mm10.ml.fa",
+        #                       "mouse", "test")
+        # test_loaders = get_dataloader("/mnt/taurus/data2/zhenqiaosong/HyenaDNA/data_long_range_dna/Akita/tfrecords/test-*.tfr")
         val_loader_names, val_loaders = self._eval_dataloaders_names(val_loaders, "val")
         test_loader_names, test_loaders = self._eval_dataloaders_names(
             test_loaders, "test"
@@ -651,6 +673,9 @@ def train(config):
         pl.seed_everything(config.train.seed, workers=True)
     trainer = create_trainer(config)
     model = SequenceLightningModule(config)
+    # model = LMBackbone(256, 2, 4*256, 12)
+    # model.load_state_dict(torch.load('/mnt/taurus/data2/zhenqiaosong/HyenaDNA/pretrained_models/weights.ckpt'),
+    #                       strict=False)
 
     # Load pretrained_model if specified
     if config.train.get("pretrained_model_path", None) is not None:
@@ -658,7 +683,8 @@ def train(config):
         model = SequenceLightningModule.load_from_checkpoint(
             config.train.pretrained_model_path,
             config=config,
-            strict=config.train.pretrained_model_strict_load,
+            strict=False
+            # strict=config.train.pretrained_model_strict_load,
         )
 
     # Run initial validation epoch (useful for debugging, finetuning)
@@ -670,10 +696,9 @@ def train(config):
         trainer.fit(model, ckpt_path=config.train.ckpt)
     else:
         trainer.fit(model)
-    if config.train.test:
-        trainer.test(model)
-
-
+    # if config.train.test:
+    #     trainer.test(model)
+    # fw.close()
 
 
 @hydra.main(config_path="configs", config_name="config.yaml")

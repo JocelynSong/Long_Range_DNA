@@ -161,7 +161,7 @@ class HG38Dataset(torch.utils.data.Dataset):
         assert bed_path.exists(), 'path to .bed file must exist'
 
         # read bed file
-        df_raw = pd.read_csv(str(bed_path), sep = '\t', names=['chr_name', 'start', 'end', 'split'])
+        df_raw = pd.read_csv(str(bed_path), sep = '\t', names=['chr_name', 'start', 'end', 'label', 'split'])
         # select only split df
         self.df = df_raw[df_raw['split'] == split]
 
@@ -185,7 +185,8 @@ class HG38Dataset(torch.utils.data.Dataset):
         # sample a random row from df
         row = self.df.iloc[idx]
         # row = (chr, start, end, split)
-        chr_name, start, end = (row[0], row[1], row[2])
+        chr_name, start, end, label = (row[0], row[1], row[2], row[3])
+        label = torch.LongTensor([label])
 
         seq = self.fasta(chr_name, start, end, max_length=self.max_length, return_augs=self.return_augs)
 
@@ -221,5 +222,4 @@ class HG38Dataset(torch.utils.data.Dataset):
 
         data = seq[:-1].clone()  # remove eos
         target = seq[1:].clone()  # offset by 1, includes eos
-
-        return data, target
+        return data, target, {"label": label}

@@ -163,14 +163,20 @@ class LMTask(BaseTask):
     def forward(self, batch, encoder, model, decoder, _state):
         """Passes a batch through the encoder, backbone, and decoder"""
         # z holds arguments such as sequence length
-        x, y, *z = batch # z holds extra dataloader info such as resolution
-        if len(z) == 0:
-            z = {}
-        else:
-            assert len(z) == 1 and isinstance(z[0], dict), "Dataloader must return dictionary of extra arguments"
-            z = z[0]
-        x, w = encoder(x, **z) # w can model-specific constructions such as key_padding_mask for transformers or state for RNNs
-        x, state = model(x, **w, state=_state)
+
+        # x, y, *z = batch # z holds extra dataloader info such as resolution
+        # if len(z) == 0:
+        #     z = {}
+        # else:
+        #     assert len(z) == 1 and isinstance(z[0], dict), "Dataloader must return dictionary of extra arguments"
+        #     z = z[0]
+        # x, w = encoder(x,
+        #                **z)  # w can model-specific constructions such as key_padding_mask for transformers or state for RNNs
+        # x, state = model(x, **w, state=_state)
+        # x, state = model(x, **z, state=_state)
+
+        x, y, z = batch
+        x, state = model(x, label=z["label"], state=_state)
         self._state = state
         x, w = decoder(x, state=state, **z)
 
@@ -239,7 +245,67 @@ class MaskedMultiClass(MultiClass):
         self._state = state
         x, w = decoder(x, state=state, **z)
         return x, y, w
-        
+
+
+class ContactMapPrediction(MultiClass):
+
+    def forward(self, batch, encoder, model, _state):
+        """Passes a batch through the encoder, backbone, and decoder"""
+
+        # z holds arguments such as sequence length
+        x, y, *z = batch # z holds extra dataloader info such as resolution
+        if len(z) == 0:
+            z = {}
+        else:
+            assert len(z) == 1 and isinstance(z[0], dict), "Dataloader must return dictionary of extra arguments"
+            z = z[0]
+
+        x = model(x) # [B, L, d]
+        x = x.reshape(x.size(0), 2048, -1, x.size(-1))
+        x = torch.mean(x, dim=1)
+        scores = torch.bmm(x, x.transpose(1, 2))
+        scores = scores.reshape(scores.size(0), -1)
+
+        assert scores.size(1) == y.size(1)
+        return scores, y
+
+
+class VariantEffectPrediction(MultiClass):
+
+    def forward(self, batch, encoder, model, _state):
+        """Passes a batch through the encoder, backbone, and decoder"""
+
+        # z holds arguments such as sequence length
+        x, y, *z = batch # z holds extra dataloader info such as resolution
+        if len(z) == 0:
+            z = {}
+        else:
+            assert len(z) == 1 and isinstance(z[0], dict), "Dataloader must return dictionary of extra arguments"
+            z = z[0]
+
+        x = model(x) # [B, L, d]
+
+        assert x.size(1) == y.size(1)
+        return x, y
+
+
+class EQTLTask(MultiClass):
+
+    def forward(self, batch, encoder, model, _state):
+        """Passes a batch through the encoder, backbone, and decoder"""
+
+        # z holds arguments such as sequence length
+        x, y, z = batch # z holds extra dataloader info such as resolution
+
+        # prob, preds = model(x) # [B, L, d]
+        # print(z.shape)
+        # print(z.dtype)
+        preds = model(y)
+
+        #assert preds.size(1) == z.size(1)
+
+        return preds, z
+
 
 class HG38Task(LMTask):
 
@@ -385,4 +451,7 @@ registry = {
     'lm': LMTask,
     'hg38': HG38Task,
     "masked_multiclass": MaskedMultiClass,
+    "contact_map_prediction": ContactMapPrediction,
+    "variant_effect_prediction": VariantEffectPrediction,
+    "eqtl": EQTLTask
 }

@@ -182,6 +182,11 @@ def cross_entropy(logits, y, ignore_index=-100):
     y = y.view(-1)
     return F.cross_entropy(logits, y, ignore_index=ignore_index)
 
+def mse_loss(x, y):
+    loss = torch.nn.MSELoss()
+    return loss(x, y)
+
+
 
 def soft_cross_entropy(logits, y, label_smoothing=0.0):
     logits = logits.view(-1, logits.shape[-1])
@@ -311,6 +316,23 @@ def ppl(x, y, loss_fn):
     return torch.exp(loss_fn(x, y))
 
 
+def binary_classification_loss(x, y):
+    # BCE loss requires squeezing last dimension of logits so it has the same shape as y
+    # requires y to be float, since it's overloaded to represent a probability
+    loss = torch.sum(-torch.log(x.gather(dim=-1, index=y.unsqueeze(-1)).squeeze(-1))) / (x.size(0) * x.size(1))
+    return loss
+
+
+def eqtl_loss(preds, z):
+    # BCE loss requires squeezing last dimension of logits so it has the same shape as y
+    # requires y to be float, since it's overloaded to represent a probability
+    # loss_seq = torch.sum(-torch.log(prob.gather(dim=-1, index=y.unsqueeze(-1)).squeeze(-1))) / (y.size(0) * y.size(1))
+    loss_label = torch.sum(-torch.log(preds.gather(dim=-1, index=z.unsqueeze(-1)).squeeze(-1))) / z.size(0)
+    # loss = loss_seq + loss_label
+
+    return loss_label
+
+
 # should have a better way to do this
 output_metric_fns = {
     "binary_cross_entropy": binary_cross_entropy,
@@ -340,6 +362,9 @@ output_metric_fns = {
     "soft_cross_entropy": soft_cross_entropy,  # only for pytorch 1.10+
     "student_t": student_t_loss,
     "gaussian_ll": gaussian_ll_loss,
+    "mse_loss": mse_loss,
+    "binary_classification_loss": binary_classification_loss,
+    "eqtl_loss": eqtl_loss
 }
 
 loss_metric_fns = {

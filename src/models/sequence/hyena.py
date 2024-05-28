@@ -315,6 +315,7 @@ class HyenaOperator(nn.Module):
         assert (
             l_max % num_blocks == 0
         ), f"Maximum signal length {l_max} must be divisible by block dimension {num_blocks}"
+
         block_dim = l_max // num_blocks
         head_dim = d_model // num_heads
 
@@ -339,6 +340,7 @@ class HyenaOperator(nn.Module):
         )
         self.activation = Activation(activation)
         self.dropout = nn.Dropout(dropout)
+        # self.setup_projections(False, inner_factor)
         self.setup_projections(fused_bias_fc, inner_factor)
         self.setup_filters(filter_cls, filter_args)
 
@@ -349,6 +351,7 @@ class HyenaOperator(nn.Module):
         linear_cls = nn.Linear if not fused_bias_fc else FusedDense
         self.out_proj = linear_cls(self.d_model * inner_factor, self.d_model)
         self.in_proj = linear_cls(self.d_model, (self.order + 1) * self.d_model)
+
         if self.post_order_ffn:
             self.ord_proj_w = nn.Parameter(
                 torch.randn(self.order, self.num_heads, self.num_heads)
@@ -388,6 +391,7 @@ class HyenaOperator(nn.Module):
     def forward(self, u, *args, **kwargs):
         l = u.size(-2)
         l_filter = min(l, self.l_max)
+
         u = self.in_proj(u)
         u = rearrange(u, "b l d -> b d l")
 

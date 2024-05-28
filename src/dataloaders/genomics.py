@@ -18,6 +18,11 @@ from src.dataloaders.datasets.chromatin_profile_dataset import ChromatinProfileD
 from src.dataloaders.datasets.species_dataset import SpeciesDataset
 from src.dataloaders.datasets.icl_genomics_dataset import ICLGenomicsDataset
 from src.dataloaders.datasets.hg38_fixed_dataset import HG38FixedDataset
+from src.dataloaders.datasets.akita_dataset import AkitaDataset
+from src.dataloaders.datasets.enformer_dataset import BasenjiDataSet
+from src.dataloaders.datasets.eqtl_dataset import EQTLseqDataSet
+
+import torch
 
 
 """
@@ -25,6 +30,7 @@ from src.dataloaders.datasets.hg38_fixed_dataset import HG38FixedDataset
 Dataloaders for genomics datasets, including pretraining and downstream tasks.  First works in HyenaDNA project, May 2023.
 
 """
+
 
 class HG38(SequenceDataset):
     """
@@ -76,9 +82,11 @@ class HG38(SequenceDataset):
 
         # handle if file paths are None (default paths)
         if self.bed_file is None:
-            self.bed_file = default_data_path / self._name_ / 'human-sequences.bed'
+            # self.bed_file = default_data_path / self._name_ / 'human-sequences.bed'
+            self.bed_file = "/mnt/data2/zhenqiaosong/HyenaDNA/data/hg38.human.bed"
         if self.fasta_file is None:
-            self.fasta_file = default_data_path / self._name_ / 'hg38.ml.fa'
+            # self.fasta_file = default_data_path / self._name_ / 'hg38.ml.fa'
+            self.fasta_file = "/mnt/data2/zhenqiaosong/HyenaDNA/data/hg38.fa"
 
         if fault_tolerant:
             assert self.shuffle
@@ -112,7 +120,8 @@ class HG38(SequenceDataset):
 
     def init_datasets(self):
         """Init the datasets (separate from the tokenizer)"""
-
+        print(self.bed_file)
+        print(self.fasta_file)
         # delete old datasets to free memory
         if hasattr(self, 'dataset_train'):
             self.dataset_train.fasta.seqs.close()
@@ -196,6 +205,7 @@ class HG38(SequenceDataset):
 
     def _data_loader(self, dataset: Dataset, batch_size: int, shuffle: bool = False,
                      sampler=None) -> DataLoader:
+        print(len(dataset))
         return DataLoader(
             dataset,
             batch_size=batch_size,
@@ -720,20 +730,255 @@ class HG38Fixed(HG38):
 
         self.dataset_val = self.dataset_train
         self.dataset_test = self.dataset_train
-    
 
-# if __name__ == '__main__':
-#     """Quick test using dataloader. Can't call from here though."""
 
-#     loader = HG38(
-#         bed_file='/home/exnx/enformer-pytorch/data/basenji/human-sequences.bed',
-#         fasta_file='/home/exnx/enformer-pytorch/data/basenji/hg38.ml.fa',
-#         tokenizer_name='char_level', max_length=2000
-#     )
+class AkitaBenchmark(HG38):
+    _name_ = "akita_benchmark"
+    l_output = 0  # need to set this for decoder to work correctly
 
-    # breakpoint()
+    def __init__(self, dataset_name, dest_path=None, tokenizer_name='char', d_output=None, rc_aug=False,
+                 max_length=1024, use_padding=True, max_length_val=None, max_length_test=None,
+                 padding_side='left', return_mask=False, val_ratio=0.0005, val_split_seed=2357, add_eos=False,
+                 detokenize=False, val_only=False, batch_size=32, batch_size_eval=None, num_workers=1,
+                 shuffle=True, pin_memory=False, drop_last=False, fault_tolerant=False, ddp=False,
+                 fast_forward_epochs=None, fast_forward_batches=None, *args, **kwargs):
 
-    # it = iter(ds)
-    # elem = next(it)
-    # print(len(elem))
-    # breakpoint()
+        self.dataset_name = dataset_name
+        self.dest_path = dest_path
+        self.tokenizer_name = tokenizer_name
+        self.d_output = d_output
+        self.rc_aug = rc_aug
+        self.max_length = max_length
+        self.use_padding = use_padding
+        self.max_length_val = max_length_val if max_length_val is not None else max_length
+        self.max_length_test = max_length_test if max_length_test is not None else max_length
+        self.padding_side = padding_side
+        self.return_mask = return_mask
+        self.val_ratio = val_ratio
+        self.val_split_seed = val_split_seed
+        self.val_only = val_only
+        self.add_eos = add_eos
+        self.detokenize = detokenize
+        self.batch_size = batch_size
+        self.batch_size_eval = batch_size_eval if batch_size_eval is not None else self.batch_size
+        self.num_workers = num_workers
+        self.shuffle = shuffle
+        self.pin_memory = pin_memory
+        self.drop_last = drop_last
+
+        if self.dest_path is None:
+            self.dest_path = default_data_path / self._name_
+
+        if fault_tolerant:
+            assert self.shuffle
+        self.fault_tolerant = fault_tolerant
+        if ddp:
+            assert fault_tolerant
+        self.ddp = ddp
+        self.fast_forward_epochs = fast_forward_epochs
+        self.fast_forward_batches = fast_forward_batches
+        if self.fast_forward_epochs is not None or self.fast_forward_batches is not None:
+            assert ddp and fault_tolerant
+
+    def setup(self, stage=None):
+        # TODO instantiate with registry
+
+        if self.tokenizer_name == 'char':
+            print("**Using Char-level tokenizer**")
+            self.tokenizer = CharacterTokenizer(
+                characters=['A', 'C', 'G', 'T', 'N'],
+                model_max_length=self.max_length + 2,  # add 2 since default adds eos/eos tokens, crop later
+                add_special_tokens=False,
+                padding_side=self.padding_side,
+            )
+
+        self.dataset_train = AkitaDataset("/mnt/taurus/data2/zhenqiaosong/HyenaDNA/data_long_range_dna/Akita/tfrecords/train-*.tfr",
+                                          'HFF')
+
+        self.dataset_val = AkitaDataset("/mnt/taurus/data2/zhenqiaosong/HyenaDNA/data_long_range_dna/Akita/tfrecords/valid-*.tfr",
+                                          'HFF')
+        self.dataset_test = AkitaDataset(
+            "/mnt/taurus/data2/zhenqiaosong/HyenaDNA/data_long_range_dna/Akita/tfrecords/test-*.tfr",
+            'HFF')
+
+    def train_dataloader(self, *args: Any, **kwargs: Any) -> Union[DataLoader, List[DataLoader]]:
+        """ The val dataloader """
+        return torch.utils.data.DataLoader(self.dataset_train, num_workers=0, batch_size=1)
+
+    def val_dataloader(self, *args: Any, **kwargs: Any) -> Union[DataLoader, List[DataLoader]]:
+        """ The val dataloader """
+        return torch.utils.data.DataLoader(self.dataset_val, num_workers=0, batch_size=1)
+
+    def test_dataloader(self, *args: Any, **kwargs: Any) -> Union[DataLoader, List[DataLoader]]:
+        """ The test dataloader, it's a dummy loader just to make the trainer happy, we don't use it."""
+        return torch.utils.data.DataLoader(self.dataset_test, num_workers=0, batch_size=1)
+
+
+class EnformerBenchmark(HG38):
+    _name_ = "enformer_benchmark"
+    l_output = 0  # need to set this for decoder to work correctly
+
+    def __init__(self, dataset_name, dest_path=None, tokenizer_name='char', d_output=None, rc_aug=False,
+                 max_length=1024, use_padding=True, max_length_val=None, max_length_test=None,
+                 padding_side='left', return_mask=False, val_ratio=0.0005, val_split_seed=2357, add_eos=False,
+                 detokenize=False, val_only=False, batch_size=32, batch_size_eval=None, num_workers=1,
+                 shuffle=True, pin_memory=False, drop_last=False, fault_tolerant=False, ddp=False,
+                 fast_forward_epochs=None, fast_forward_batches=None, *args, **kwargs):
+
+        self.dataset_name = dataset_name
+        self.dest_path = dest_path
+        self.tokenizer_name = tokenizer_name
+        self.d_output = d_output
+        self.rc_aug = rc_aug
+        self.max_length = max_length
+        self.use_padding = use_padding
+        self.max_length_val = max_length_val if max_length_val is not None else max_length
+        self.max_length_test = max_length_test if max_length_test is not None else max_length
+        self.padding_side = padding_side
+        self.return_mask = return_mask
+        self.val_ratio = val_ratio
+        self.val_split_seed = val_split_seed
+        self.val_only = val_only
+        self.add_eos = add_eos
+        self.detokenize = detokenize
+        self.batch_size = batch_size
+        self.batch_size_eval = batch_size_eval if batch_size_eval is not None else self.batch_size
+        self.num_workers = num_workers
+        self.shuffle = shuffle
+        self.pin_memory = pin_memory
+        self.drop_last = drop_last
+
+        if self.dest_path is None:
+            self.dest_path = default_data_path / self._name_
+
+        if fault_tolerant:
+            assert self.shuffle
+        self.fault_tolerant = fault_tolerant
+        if ddp:
+            assert fault_tolerant
+        self.ddp = ddp
+        self.fast_forward_epochs = fast_forward_epochs
+        self.fast_forward_batches = fast_forward_batches
+        if self.fast_forward_epochs is not None or self.fast_forward_batches is not None:
+            assert ddp and fault_tolerant
+
+        self.human_fasta_path = '/mnt/aries/data4/danqingwang/workspace/clone/hyena-dna/data/Enformer/hg38.ml.fa'
+        self.mouse_fasta_path = '/mnt/aries/data4/danqingwang/workspace/clone/hyena-dna/data/Enformer/mm10.ml.fa'
+        self.data_path = '/mnt/aries/data4/danqingwang/workspace/clone/hyena-dna/data/Enformer/data'
+        self.SEQUENCE_LENGTH = 196_608
+        self.BIN_SIZE = 128
+        self.TARGET_LENGTH = 896
+
+    def setup(self, stage=None):
+        # TODO instantiate with registry
+
+        if self.tokenizer_name == 'char':
+            print("**Using Char-level tokenizer**")
+            self.tokenizer = CharacterTokenizer(
+                characters=['A', 'C', 'G', 'T', 'N'],
+                model_max_length=self.max_length + 2,  # add 2 since default adds eos/eos tokens, crop later
+                add_special_tokens=False,
+                padding_side=self.padding_side,
+            )
+
+        self.dataset_train = BasenjiDataSet("mouse", "train", self.SEQUENCE_LENGTH, self.mouse_fasta_path)
+
+        self.dataset_val = BasenjiDataSet("mouse", "valid", self.SEQUENCE_LENGTH, self.mouse_fasta_path)
+
+        self.dataset_test = BasenjiDataSet("mouse", "test", self.SEQUENCE_LENGTH, self.mouse_fasta_path)
+
+    def train_dataloader(self, *args: Any, **kwargs: Any) -> Union[DataLoader, List[DataLoader]]:
+        """ The val dataloader """
+        return torch.utils.data.DataLoader(self.dataset_train, num_workers=0, batch_size=1)
+
+    def val_dataloader(self, *args: Any, **kwargs: Any) -> Union[DataLoader, List[DataLoader]]:
+        """ The val dataloader """
+        return torch.utils.data.DataLoader(self.dataset_val, num_workers=0, batch_size=1)
+
+    def test_dataloader(self, *args: Any, **kwargs: Any) -> Union[DataLoader, List[DataLoader]]:
+        """ The test dataloader, it's a dummy loader just to make the trainer happy, we don't use it."""
+        return torch.utils.data.DataLoader(self.dataset_test, num_workers=0, batch_size=1)
+
+
+
+class EQTLBenchmark(HG38):
+    _name_ = "eqtl_benchmark"
+    l_output = 0  # need to set this for decoder to work correctly
+
+    def __init__(self, dataset_name, dest_path=None, tokenizer_name='char', d_output=None, rc_aug=False,
+                 max_length=1024, use_padding=True, max_length_val=None, max_length_test=None,
+                 padding_side='left', return_mask=False, val_ratio=0.0005, val_split_seed=2357, add_eos=False,
+                 detokenize=False, val_only=False, batch_size=32, batch_size_eval=None, num_workers=1,
+                 shuffle=True, pin_memory=False, drop_last=False, fault_tolerant=False, ddp=False,
+                 fast_forward_epochs=None, fast_forward_batches=None, *args, **kwargs):
+
+        self.dataset_name = dataset_name
+        self.dest_path = dest_path
+        self.tokenizer_name = tokenizer_name
+        self.d_output = d_output
+        self.rc_aug = rc_aug
+        self.max_length = max_length
+        self.use_padding = use_padding
+        self.max_length_val = max_length_val if max_length_val is not None else max_length
+        self.max_length_test = max_length_test if max_length_test is not None else max_length
+        self.padding_side = padding_side
+        self.return_mask = return_mask
+        self.val_ratio = val_ratio
+        self.val_split_seed = val_split_seed
+        self.val_only = val_only
+        self.add_eos = add_eos
+        self.detokenize = detokenize
+        self.batch_size = batch_size
+        self.batch_size_eval = batch_size_eval if batch_size_eval is not None else self.batch_size
+        self.num_workers = num_workers
+        self.shuffle = shuffle
+        self.pin_memory = pin_memory
+        self.drop_last = drop_last
+
+        if self.dest_path is None:
+            self.dest_path = default_data_path / self._name_
+
+        if fault_tolerant:
+            assert self.shuffle
+        self.fault_tolerant = fault_tolerant
+        if ddp:
+            assert fault_tolerant
+        self.ddp = ddp
+        self.fast_forward_epochs = fast_forward_epochs
+        self.fast_forward_batches = fast_forward_batches
+        if self.fast_forward_epochs is not None or self.fast_forward_batches is not None:
+            assert ddp and fault_tolerant
+
+        self.data_path = "/mnt/taurus/data2/zhenqiaosong/HyenaDNA/data_long_range_dna/eQTL"
+        self.tissue = "Adipose_Subcutaneous"
+
+    def setup(self, stage=None):
+        # TODO instantiate with registry
+
+        if self.tokenizer_name == 'char':
+            print("**Using Char-level tokenizer**")
+            self.tokenizer = CharacterTokenizer(
+                characters=['A', 'C', 'G', 'T', 'N'],
+                model_max_length=self.max_length + 2,  # add 2 since default adds eos/eos tokens, crop later
+                add_special_tokens=False,
+                padding_side=self.padding_side,
+            )
+
+        self.dataset_train = EQTLseqDataSet("{}/config/gtex_hg38.{}.config".format(self.data_path, self.tissue), "train")
+
+        self.dataset_val = EQTLseqDataSet("{}/config/gtex_hg38.{}.config".format(self.data_path, self.tissue), "valid")
+
+        self.dataset_test = EQTLseqDataSet("{}/config/gtex_hg38.{}.config".format(self.data_path, self.tissue), "test")
+
+    def train_dataloader(self, *args: Any, **kwargs: Any) -> Union[DataLoader, List[DataLoader]]:
+        """ The val dataloader """
+        return torch.utils.data.DataLoader(self.dataset_train, num_workers=0, batch_size=1)
+
+    def val_dataloader(self, *args: Any, **kwargs: Any) -> Union[DataLoader, List[DataLoader]]:
+        """ The val dataloader """
+        return torch.utils.data.DataLoader(self.dataset_val, num_workers=0, batch_size=1)
+
+    def test_dataloader(self, *args: Any, **kwargs: Any) -> Union[DataLoader, List[DataLoader]]:
+        """ The test dataloader, it's a dummy loader just to make the trainer happy, we don't use it."""
+        return torch.utils.data.DataLoader(self.dataset_test, num_workers=0, batch_size=1)
+
