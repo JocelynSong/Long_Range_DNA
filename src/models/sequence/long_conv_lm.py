@@ -401,8 +401,18 @@ class LMBackbone(nn.Module):
                 residual_in_fp32=self.residual_in_fp32,
             )
 
-        hidden_states = torch.mean(hidden_states.reshape(hidden_states.size(0), -1, hidden_states.size(-1)), dim=1)
-        outs = F.softmax(self.out_layer(hidden_states), dim=-1) #+ 1e-5
+        # hidden_states = torch.mean(hidden_states.reshape(hidden_states.size(0), -1, 2048, hidden_states.size(-1)), dim=2)  # [B, 218, dim]
+        # norm = torch.sqrt(torch.sum(hidden_states * hidden_states, dim=-1)).unsqueeze(-1) # [B, L]
+        # norm = torch.bmm(norm, norm.transpose(1, 2))
+        # outs = (torch.bmm(hidden_states, hidden_states.transpose(1, 2))/norm).reshape(hidden_states.size(0), -1)
+        # matrix = hidden_states[0]
+        # vec1 = matrix.view(-1, 1, hidden_states.size(-1)).repeat(1, hidden_states.size(1), 1).transpose(0, 1)
+        # vec2 = matrix.view(-1, 1, hidden_states.size(-1)).repeat(1, hidden_states.size(1), 1)
+        # vec3 = torch.cat((vec2, vec1), dim=-1).reshape(-1, hidden_states.size(-1)*2)
+        #
+        # outs = self.out_layer(vec3).unsqueeze(0) #[1, 218*218, 1]]
+        hidden_states = torch.mean(hidden_states, dim=1)
+        outs = self.out_layer(hidden_states)
         return outs
         # return hidden_states
 

@@ -6,6 +6,7 @@ import json
 from natsort import natsorted
 import glob
 
+tf.config.set_visible_devices([], "GPU")
 train_data_path = "/mnt/taurus/data2/zhenqiaosong/HyenaDNA/data_long_range_dna/Akita/tfrecords/train-*.tfr"
 
 SEQUENCE_LENGTH = 1048576
@@ -47,16 +48,18 @@ class AkitaDataset(torch.utils.data.IterableDataset):
         return dataset
 
     def __iter__(self):
-        num = 5
+        num = 200
         for seq_raw, targets_raw in self.dataset:
             # print(seq_raw.shape, targets_raw.shape)\n",
-            seq = seq_raw.numpy().reshape(-1, 4).astype('int8')
-            targets = targets_raw.numpy().reshape(TARGET_LENGTH, -1).astype('float16')
+            seq = seq_raw.cpu().numpy().reshape(-1, 4).astype('int8')
+            targets = targets_raw.cpu().numpy().reshape(TARGET_LENGTH, -1).astype('float16')
             # yield {"sequence": seq, "target": targets[:, self.target_ind]}
-            seq = seq[972800: -65536, :]
+            # seq = seq[-372736: -65536, :]
+            seq = seq[-475136: -65536, :]
             seq = np.argmax(seq, axis=-1)
             targets = targets[:, self.target_ind]
-            targets = targets[-6:]
+            # targets = targets[-11026:]
+            targets = targets[-19701:]
             scores = np.eye(num)
             index = 0
             for i in range(num):
@@ -69,12 +72,11 @@ class AkitaDataset(torch.utils.data.IterableDataset):
                 for j in range(i - 1):
                     scores[i][j] = scores[j][i]
             scores = torch.FloatTensor(scores).reshape(-1)
-
             yield (seq, scores)
 
 
-def get_dataloader(data_path):
-    dataset = AkitaDataset(data_path, 'HFF')
+def get_dataloader(data_path, cell_type):
+    dataset = AkitaDataset(data_path, cell_type)
     loader = torch.utils.data.DataLoader(dataset, num_workers=0, batch_size=1)
     return loader
 

@@ -44,6 +44,9 @@ torch.backends.cudnn.allow_tf32 = True
 OmegaConf.register_new_resolver('eval', eval)
 OmegaConf.register_new_resolver('div_up', lambda x, y: (x + y - 1) // y)
 
+# cell_type = "HFF"
+fw = open("enhancer_promoter.txt", "w", encoding="utf-8")
+
 
 # Lots of annoying hacks to get WandbLogger to continuously retry on failure
 class DummyExperiment:
@@ -336,14 +339,18 @@ class SequenceLightningModule(pl.LightningModule):
         else:
             loss = self.loss_val(x, y)
 
+        prob = torch.softmax(x, dim=-1)
+
+        for i in range(prob.size(0)):
+            fw.write(str(prob[i][1].item()) + " " + str(y[i].item()) + "\n")
         # Metrics
         metrics = self.metrics(x, y)
         metrics["loss"] = loss
         metrics = {f"{prefix}/{k}": v for k, v in metrics.items()}
 
         # Calculate torchmetrics
-        torchmetrics = getattr(self, f'{prefix}_torchmetrics')
-        torchmetrics(x, y, loss=loss)
+        # torchmetrics = getattr(self, f'{prefix}_torchmetrics')
+        # torchmetrics(x, y, loss=loss)
         
         log_on_step = 'eval' in self.hparams and self.hparams.eval.get('log_on_step', False) and prefix == 'train'
 
@@ -358,14 +365,14 @@ class SequenceLightningModule(pl.LightningModule):
 
         # log the whole dict, otherwise lightning takes the mean to reduce it
         # https://pytorch-lightning.readthedocs.io/en/stable/visualize/logging_advanced.html#enable-metrics-for-distributed-training
-        self.log_dict(
-            torchmetrics,
-            on_step=log_on_step,
-            on_epoch=True,
-            prog_bar=True,
-            add_dataloader_idx=False,
-            sync_dist=True,
-        )
+        # self.log_dict(
+        #     torchmetrics,
+        #     on_step=log_on_step,
+        #     on_epoch=True,
+        #     prog_bar=True,
+        #     add_dataloader_idx=False,
+        #     sync_dist=True,
+        # )
 
         return loss
 
@@ -537,10 +544,11 @@ class SequenceLightningModule(pl.LightningModule):
         return [optimizer], [scheduler]
 
     def train_dataloader(self):
+
         # return get_dataloader("Whole_Blood", "train")
-        # return get_dataloader("data/Enformer/mm10.ml.fa",
+        # return get_dataloader("/mnt/aries/data4/danqingwang/workspace/clone/hyena-dna/data/Enformer/mm10.ml.fa",
         #                       "mouse", "train")
-        # return get_dataloader("data_long_range_dna/Akita/tfrecords/train-*.tfr",
+        # return get_dataloader("/mnt/taurus/data2/zhenqiaosong/HyenaDNA/data_long_range_dna/Akita/tfrecords/train-*.tfr",
         # cell_type)
         return get_dataloader("data_long_range_dna/enhancer_promoter_interaction/CRISPRi_EPI", "train")
         # return self.dataset.train_dataloader(**self.hparams.loader)
@@ -559,9 +567,13 @@ class SequenceLightningModule(pl.LightningModule):
     def _eval_dataloaders(self):
 
         # Return all val + test loaders
+        # val_loaders =  get_dataloader("/mnt/aries/data4/danqingwang/workspace/clone/hyena-dna/data/Enformer/mm10.ml.fa",
+        #                       "mouse", "valid")
         # val_loaders = get_dataloader("Whole_Blood", "valid")
         # test_loaders = get_dataloader("Whole_Blood", "test")
         val_loaders = get_dataloader("data_long_range_dna/enhancer_promoter_interaction/CRISPRi_EPI", "valid")
+        # test_loaders = get_dataloader("hyena-dna/data/Enformer/mm10.ml.fa",
+        #                       "mouse", "test")
         test_loaders = get_dataloader("data_long_range_dna/enhancer_promoter_interaction/CRISPRi_EPI", "test")
 
         val_loader_names, val_loaders = self._eval_dataloaders_names(val_loaders, "val")
@@ -580,7 +592,7 @@ class SequenceLightningModule(pl.LightningModule):
         if self.hparams.train.get("remove_test_loader_in_eval", False):
             return val_loader_names, val_loaders
         # adding option to only have test loader at eval
-        elif self.hparams.train.get("remove_val_loader_in_eval", False):
+        elif self.hparams.train.get("remove_val_loader_in_eval", True):
             return test_loader_names, test_loaders
         # default behavior is to add test loaders in eval
         else:
@@ -694,13 +706,15 @@ def train(config):
         print("Running validation before training")
         trainer.validate(model)
 
-    if config.train.ckpt is not None:
-        trainer.fit(model, ckpt_path=config.train.ckpt)
-    else:
-        trainer.fit(model)
+    # if config.train.ckpt is not None:
+    #     trainer.fit(model, ckpt_path=config.train.ckpt)
+    # else:
+    #     trainer.fit(model)
 
-    # if config.train.test:
-    #     trainer.test(model)
+    if config.train.test:
+        trainer.test(model)
+
+    fw.close()
 
 
 @hydra.main(config_path="configs", config_name="config.yaml")

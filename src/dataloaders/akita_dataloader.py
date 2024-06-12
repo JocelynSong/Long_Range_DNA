@@ -6,6 +6,7 @@ import json
 from natsort import natsorted
 import glob
 
+tf.config.set_visible_devices([], "GPU")
 train_data_path = "/mnt/taurus/data2/zhenqiaosong/HyenaDNA/data_long_range_dna/Akita/tfrecords/train-*.tfr"
 
 SEQUENCE_LENGTH = 1048576
@@ -19,7 +20,6 @@ class AkitaDataset(torch.utils.data.IterableDataset):
         self.cell_type = cell_type
         target_ind_dict = {'HFF': 0, 'H1hESC': 1, 'GM12878': 2, 'IMR90': 3, 'HCT116': 4}
         self.target_ind = target_ind_dict[self.cell_type]
-
 
     def file_to_records(self, filename):
         return tf.data.TFRecordDataset(filename, compression_type='ZLIB')
@@ -47,47 +47,63 @@ class AkitaDataset(torch.utils.data.IterableDataset):
         return dataset
 
     def __iter__(self):
-        num = 5
+        num = 200
         for seq_raw, targets_raw in self.dataset:
             # print(seq_raw.shape, targets_raw.shape)\n",
-            seq = seq_raw.numpy().reshape(-1,4).astype('int8')
-            targets = targets_raw.numpy().reshape(TARGET_LENGTH,-1).astype('float16')
+            seq = seq_raw.cpu().numpy().reshape(-1, 4).astype('int8')
+            targets = targets_raw.cpu().numpy().reshape(TARGET_LENGTH, -1).astype('float16')
             # yield {"sequence": seq, "target": targets[:, self.target_ind]}
-            seq = seq[972800: -65536, :]
+            # seq = seq[-372736: -65536, :]
+            seq = seq[-475136: -65536, :]
             seq = np.argmax(seq, axis=-1)
             targets = targets[:, self.target_ind]
-            targets = targets[-6: ]
+            # targets = targets[-11026:]
+            targets = targets[-19701:]
             scores = np.eye(num)
             index = 0
             for i in range(num):
                 if i < num - 1:
-                    scores[i][i+1] = 1
-                for j in range(i+2, num):
+                    scores[i][i + 1] = 1
+                for j in range(i + 2, num):
                     scores[i][j] = targets[index]
                     index += 1
             for i in range(num):
-                for j in range(i-1):
+                for j in range(i - 1):
                     scores[i][j] = scores[j][i]
             scores = torch.FloatTensor(scores).reshape(-1)
-
             yield (seq, scores)
 
 
-train_dataset = AkitaDataset(train_data_path, 'HFF')
-train_loader = torch.utils.data.DataLoader(train_dataset, num_workers=0, batch_size=5)
+def get_dataloader(data_path):
+    dataset = AkitaDataset(data_path, 'HFF')
+
+    loader = torch.utils.data.DataLoader(dataset, num_workers=0, batch_size=1)
+    return loader
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-for i, batch in enumerate(train_loader):
-    # batch_gpu = {k:v.to(device) for k,v in batch.items()}
-    # seq = batch_gpu['sequence']
-    # target = batch_gpu['target']
+test_dataloader = get_dataloader("/mnt/taurus/data2/zhenqiaosong/HyenaDNA/data_long_range_dna/Akita/tfrecords/test-*.tfr",
+           )
+cell = "HFF"
+output_path = "/mnt/taurus/data2/zhenqiaosong/HyenaDNA/data_long_range_dna/Akita/datasets"
+fw_src = open(os.path.join(output_path, "test.seq.{}.txt".format(cell)), "w", encoding="utf-8")
+fw_tgt = open(os.path.join(output_path, "test.score.{}.txt".format(cell)), "w", encoding="utf-8")
+for i, batch in enumerate(test_dataloader):
+    print(i)
     seq, target = batch
-    # seq = seq[:, 536576: -65536, :]
-    # target = target[:, -23653: ]
     print(seq.shape)
     print(target.shape)
-    print(seq[0][0])
-    print(max(target[0]))
-    print(min(target[0]))
-    break
+    line = []
+    line_tgt= []
+    for j in range(seq.size(1)):
+        line.append(str(seq[0][j].item()))
+    for j in range(target.size(1)):
+        line_tgt.append(str(target[0][j].item()))
+    # print(seq[0][0])
+    # print(max(target[0]))
+    # print(min(target[0]))
+    # break
+    fw_src.write(" ".join(line) + "\n")
+    fw_tgt.write(" ".join(line_tgt) + "\n")
+fw_src.close()
+fw_tgt.close()

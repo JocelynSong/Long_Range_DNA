@@ -253,21 +253,12 @@ class ContactMapPrediction(MultiClass):
         """Passes a batch through the encoder, backbone, and decoder"""
 
         # z holds arguments such as sequence length
-        x, y, *z = batch # z holds extra dataloader info such as resolution
-        if len(z) == 0:
-            z = {}
-        else:
-            assert len(z) == 1 and isinstance(z[0], dict), "Dataloader must return dictionary of extra arguments"
-            z = z[0]
+        x, y = batch # z holds extra dataloader info such as resolution
 
         x = model(x) # [B, L, d]
-        x = x.reshape(x.size(0), 2048, -1, x.size(-1))
-        x = torch.mean(x, dim=1)
-        scores = torch.bmm(x, x.transpose(1, 2))
-        scores = scores.reshape(scores.size(0), -1)
 
-        assert scores.size(1) == y.size(1)
-        return scores, y
+        assert x.size(1) == y.size(1)
+        return x, y
 
 
 class VariantEffectPrediction(MultiClass):
@@ -305,6 +296,24 @@ class EQTLTask(MultiClass):
         #assert preds.size(1) == z.size(1)
 
         return preds, z
+    
+
+class EnhancerPromoterTask(MultiClass):
+
+    def forward(self, batch, encoder, model, _state):
+        """Passes a batch through the encoder, backbone, and decoder"""
+
+        # z holds arguments such as sequence length
+        x, y = batch # z holds extra dataloader info such as resolution
+
+        # prob, preds = model(x) # [B, L, d]
+        # print(z.shape)
+        # print(z.dtype)
+        preds = model(x)
+
+        #assert preds.size(1) == z.size(1)
+
+        return preds, y
 
 
 class HG38Task(LMTask):
@@ -453,5 +462,6 @@ registry = {
     "masked_multiclass": MaskedMultiClass,
     "contact_map_prediction": ContactMapPrediction,
     "variant_effect_prediction": VariantEffectPrediction,
-    "eqtl": EQTLTask
+    "eqtl": EQTLTask,
+    "enhancer_promoter": EnhancerPromoterTask
 }

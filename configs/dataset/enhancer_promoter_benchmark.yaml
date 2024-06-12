@@ -1,5 +1,5 @@
-_name_: akita_benchmark
-dataset_name: akita_benchmark
+_name_: enhancer_promoter_benchmark
+dataset_name: enhancer_promoter_benchmark
 dest_path: null
 max_length: 450000
 d_output: ${.${.dataset_name}.classes}
@@ -10,7 +10,7 @@ batch_size: 1
 train_len: ${.${.dataset_name}.train_len}
 __l_max: ${.max_length}
 shuffle: true  # set this as default!
-akita_benchmark:
+enhancer_promoter_benchmark:
   train_len: 450000
-  classes: 1
+  classes: 2
 

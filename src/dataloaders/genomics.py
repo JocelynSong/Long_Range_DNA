@@ -5,6 +5,8 @@ from typing import Any, List, Union
 from torch.utils.data.dataloader import DataLoader, Dataset
 from transformers import AutoTokenizer
 from datasets import Dataset
+import tensorflow as tf
+tf.config.set_visible_devices([], "GPU")
 
 from src.dataloaders.base import SequenceDataset, default_data_path
 from src.dataloaders.fault_tolerant_sampler import RandomFaultTolerantSampler
@@ -21,6 +23,7 @@ from src.dataloaders.datasets.hg38_fixed_dataset import HG38FixedDataset
 from src.dataloaders.datasets.akita_dataset import AkitaDataset
 from src.dataloaders.datasets.enformer_dataset import BasenjiDataSet
 from src.dataloaders.datasets.eqtl_dataset import EQTLseqDataSet
+from src.dataloaders.datasets.enhancer_promoter_dataset import EPIseqDataSet
 
 import torch
 
@@ -765,6 +768,7 @@ class AkitaBenchmark(HG38):
         self.shuffle = shuffle
         self.pin_memory = pin_memory
         self.drop_last = drop_last
+        self.cell_type = 'HFF'
 
         if self.dest_path is None:
             self.dest_path = default_data_path / self._name_
@@ -793,13 +797,13 @@ class AkitaBenchmark(HG38):
             )
 
         self.dataset_train = AkitaDataset("/mnt/taurus/data2/zhenqiaosong/HyenaDNA/data_long_range_dna/Akita/tfrecords/train-*.tfr",
-                                          'HFF')
+        self.cell_type)
 
         self.dataset_val = AkitaDataset("/mnt/taurus/data2/zhenqiaosong/HyenaDNA/data_long_range_dna/Akita/tfrecords/valid-*.tfr",
-                                          'HFF')
+        self.cell_type)
         self.dataset_test = AkitaDataset(
             "/mnt/taurus/data2/zhenqiaosong/HyenaDNA/data_long_range_dna/Akita/tfrecords/test-*.tfr",
-            'HFF')
+        self.cell_type)
 
     def train_dataloader(self, *args: Any, **kwargs: Any) -> Union[DataLoader, List[DataLoader]]:
         """ The val dataloader """
@@ -950,7 +954,7 @@ class EQTLBenchmark(HG38):
             assert ddp and fault_tolerant
 
         self.data_path = "/mnt/taurus/data2/zhenqiaosong/HyenaDNA/data_long_range_dna/eQTL"
-        self.tissue = "Adipose_Subcutaneous"
+        self.tissue = "Whole_Blood"
 
     def setup(self, stage=None):
         # TODO instantiate with registry
@@ -969,6 +973,87 @@ class EQTLBenchmark(HG38):
         self.dataset_val = EQTLseqDataSet("{}/config/gtex_hg38.{}.config".format(self.data_path, self.tissue), "valid")
 
         self.dataset_test = EQTLseqDataSet("{}/config/gtex_hg38.{}.config".format(self.data_path, self.tissue), "test")
+
+    def train_dataloader(self, *args: Any, **kwargs: Any) -> Union[DataLoader, List[DataLoader]]:
+        """ The val dataloader """
+        return torch.utils.data.DataLoader(self.dataset_train, num_workers=0, batch_size=1)
+
+    def val_dataloader(self, *args: Any, **kwargs: Any) -> Union[DataLoader, List[DataLoader]]:
+        """ The val dataloader """
+        return torch.utils.data.DataLoader(self.dataset_val, num_workers=0, batch_size=1)
+
+    def test_dataloader(self, *args: Any, **kwargs: Any) -> Union[DataLoader, List[DataLoader]]:
+        """ The test dataloader, it's a dummy loader just to make the trainer happy, we don't use it."""
+        return torch.utils.data.DataLoader(self.dataset_test, num_workers=0, batch_size=1)
+
+
+class EnhancerPromoterBenchmark(HG38):
+    _name_ = "enhancer_promoter_benchmark"
+    l_output = 0  # need to set this for decoder to work correctly
+
+    def __init__(self, dataset_name, dest_path=None, tokenizer_name='char', d_output=None, rc_aug=False,
+                 max_length=1024, use_padding=True, max_length_val=None, max_length_test=None,
+                 padding_side='left', return_mask=False, val_ratio=0.0005, val_split_seed=2357, add_eos=False,
+                 detokenize=False, val_only=False, batch_size=32, batch_size_eval=None, num_workers=1,
+                 shuffle=True, pin_memory=False, drop_last=False, fault_tolerant=False, ddp=False,
+                 fast_forward_epochs=None, fast_forward_batches=None, *args, **kwargs):
+
+        self.dataset_name = dataset_name
+        self.dest_path = dest_path
+        self.tokenizer_name = tokenizer_name
+        self.d_output = d_output
+        self.rc_aug = rc_aug
+        self.max_length = max_length
+        self.use_padding = use_padding
+        self.max_length_val = max_length_val if max_length_val is not None else max_length
+        self.max_length_test = max_length_test if max_length_test is not None else max_length
+        self.padding_side = padding_side
+        self.return_mask = return_mask
+        self.val_ratio = val_ratio
+        self.val_split_seed = val_split_seed
+        self.val_only = val_only
+        self.add_eos = add_eos
+        self.detokenize = detokenize
+        self.batch_size = batch_size
+        self.batch_size_eval = batch_size_eval if batch_size_eval is not None else self.batch_size
+        self.num_workers = num_workers
+        self.shuffle = shuffle
+        self.pin_memory = pin_memory
+        self.drop_last = drop_last
+
+        if self.dest_path is None:
+            self.dest_path = default_data_path / self._name_
+
+        if fault_tolerant:
+            assert self.shuffle
+        self.fault_tolerant = fault_tolerant
+        if ddp:
+            assert fault_tolerant
+        self.ddp = ddp
+        self.fast_forward_epochs = fast_forward_epochs
+        self.fast_forward_batches = fast_forward_batches
+        if self.fast_forward_epochs is not None or self.fast_forward_batches is not None:
+            assert ddp and fault_tolerant
+
+        self.data_path = "/mnt/taurus/data2/zhenqiaosong/HyenaDNA/data_long_range_dna/enhancer_promoter_interaction/CRISPRi_EPI"
+
+    def setup(self, stage=None):
+        # TODO instantiate with registry
+
+        if self.tokenizer_name == 'char':
+            print("**Using Char-level tokenizer**")
+            self.tokenizer = CharacterTokenizer(
+                characters=['A', 'C', 'G', 'T', 'N'],
+                model_max_length=self.max_length + 2,  # add 2 since default adds eos/eos tokens, crop later
+                add_special_tokens=False,
+                padding_side=self.padding_side,
+            )
+
+        self.dataset_train = EPIseqDataSet("{}/CRISPRi_EPI_K562_hg19.config".format(self.data_path), "train")
+
+        self.dataset_val = EPIseqDataSet("{}/CRISPRi_EPI_K562_hg19.config".format(self.data_path), "valid")
+
+        self.dataset_test = EPIseqDataSet("{}/CRISPRi_EPI_K562_hg19.config".format(self.data_path), "test")
 
     def train_dataloader(self, *args: Any, **kwargs: Any) -> Union[DataLoader, List[DataLoader]]:
         """ The val dataloader """
